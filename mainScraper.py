@@ -93,7 +93,22 @@ print('BRANDS:')
 pprint.pprint(BRANDS)
 
 # Now that we have the list of product pages we want to scrape, we can begin ...
+"""
+APPROACH:
+
+build Queue of brands (name, link to dedicated page)
+While Queue of brands != empty
+    brand.url.pop() -> click
+    build Q of brand's list of series/models (name, link to dedicated page showing color/variant offerings)
+    While Queue of brand series/models != empty
+        models.url.pop() -> click
+        get each listing of varying colors, product codes, prices, etc.
+        push Pen w/ populated info to DB
+"""
+
+# To serve as temp DB
 pens = []
+
 # while len(filtered_links) > 0:
 currPage = navLinks.pop(0)
 print(currPage)
