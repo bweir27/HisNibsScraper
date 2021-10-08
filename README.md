@@ -1,6 +1,9 @@
 # HisNibsScraper
 This repository contains the code used to scrape the product listings from [HisNibs](http://hisnibs.com/), to then be used to build a proposed redesign of the site.
 
+## Setup
+In order for this webscraper to function properly, you must download the version of `chromedriver` that matches your version of Google Chrome, and place it at the root-level of this directory.
+`chromedriver` can be dowloaded [here](https://chromedriver.chromium.org/downloads)
 
 ## Approach
 The general plan for this project is to:
