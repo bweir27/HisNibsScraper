@@ -1,24 +1,27 @@
+"""
+ Brian Weir - https://github.com/bweir27
+"""
+
 from selenium import webdriver
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
+import pandas as pd
 import pprint
 import json
 import re
 import queue
 import time
 import numpy
-
-# Webdriver Setup
 from Pen import Pen
 
+# Webdriver Setup
 options = webdriver.ChromeOptions()
 print(options)
 options.add_argument('--ignore-certificate-errors')
 options.add_argument("--test-type")
-# options.binary_location = "./chromedriver"
 driver = webdriver.Chrome(executable_path="./chromedriver")
 
-# The pages we want to scrape products from
+# The URLs of the pages we want to scrape products from
 product_pages = {
     # Conklin scrapes working
     "conklin": [
@@ -59,6 +62,7 @@ product_keywords = [
     r"717i",  # Dollar 717i Solid color and 717i Transparent demonstrator pens
     r"SP-10",  # Dollar SP-10 syringe-filler
 ]
+
 """
 Capture groups:
 [0]: name of pen
@@ -69,13 +73,13 @@ capture_groups_by_brand = {
     "conklin": re.compile(
         "((?:CK7|Duragraph|Stylograph).*)(?:\s{2,})(\$\d+\.\d{2}){1,2}(?:\s*)(sold\sout)*",
         re.I),
-    "monteverde": re.compile(
-        "((?:MV|Prima|Stylograph).*)(?:\s{2,})(\$?[0-9]+\.[0-9]{2}){1,2}(?:\s*)(?:(?:retired,\s)?(?:permanently)?)(?:\s)(sold\sout|retired)*",
-        re.I),
     # "monteverde": re.compile(
-    #     "((?:MV|Prima|Stylograph).*)(?:\s{2,})(\$?\d+\.\d{2}){1,2}(?:\s*)(?:(?:retired,\s)?(?:permanently)?)(?:\s)(sold\sout|retired)*",
-    #     re.I
-    # ),
+    #     "((?:MV|Prima|Stylograph).*)(?:\s{2,})(\$?[0-9]+\.[0-9]{2}){1,2}(?:\s*)(?:(?:retired,\s)?(?:permanently)?)(?:\s)(sold\sout|retired)*",
+    #     re.I),
+    "monteverde": re.compile(
+        "((?:MV|Prim|Stylograph)(?:[a-z0-9\-\/]+\s?)*)(?:\s{2,})(\$?\d+\.\d{2})(?:\s*)(\$?\d+\.\d{2})?(?:\s+)(?:(?:retired,\s)?(?:permanently)?)(?:\s)(sold\sout|retired)*",
+        re.I
+    ),
     "pilot": re.compile(
         "(Kak.*fountain\spen)(?:\s{2,})(\$[0-9]{1,}\.[0-9]{2,})(?:\s*)(sold\sout)*",
         re.I),
@@ -83,13 +87,6 @@ capture_groups_by_brand = {
         "(?:Dollar\s)((717i|SP-10)\s.*)(\$[0-9]+\.[0-9]+)", re.I
     )
 }
-
-
-# MATCH_ALL = r'.*'
-
-
-# def flatten(t):
-#     return [item for sublist in t for item in sublist]
 
 
 # Once we have the list of strings for our products, filter them with this function
@@ -111,7 +108,7 @@ def map_product_string_to_product_listing(prod_str):
     prodName = prod_str.split('  ')[0]
 
     # Prices are formatted $##.##, but we just want the numbers
-    prices = re.findall(r"\d\d\.\d\d", prod_str)
+    prices = re.findall(r"\d+\.\d\d", prod_str)
     # Handle when two prices are listed or there is a sale -- take the last price listed
     price = float(prices[len(prices) - 1])
 
@@ -124,11 +121,11 @@ def map_product_string_to_product_listing(prod_str):
         "price": price,
         "inStock": not (soldOut or retired)
     }
-    # pprint.pprint(pen)
     return pen
 
-
+# The maximum number of elements found on a single page - used to help measure efficiency
 maxFoundElems = float('-inf')
+
 # To serve as temp DBs
 penListings = []
 penObjs = []
@@ -148,17 +145,18 @@ for brand in product_pages.keys():
         #  From that page, we want to start finding our capture groups
         """
         Capture Groups: 
-            - keyword: pen name, up to 1st "&nbsp;"
+            - keyword: pen name, up to 1st "&nbsp;$nbsp;"
             - /^\$[0-9]\.[0-9]$/: price
             - /sold out/: inStock
         """
         models = list()
 
         found = []
-        # print('\n\n')
         for keyword in product_keywords:
             foundElems = driver.find_elements_by_xpath(xpath=f'//*[contains(text(), "{keyword}")]')
-            # Update maxFoundElems
+        # foundElems = driver.find_elements_by_xpath(xpath=f'//*[contains(text(), {capture_groups_by_brand[brand]})]')
+        # foundElems = driver.find_elements_by_css_selector("td[valign=top] p")
+        # Update maxFoundElems
             if len(foundElems) > maxFoundElems:
                 maxFoundElems = len(foundElems)
 
@@ -170,7 +168,10 @@ for brand in product_pages.keys():
                     Handle Conklin All-American Yellowstone, all Jewelria, and all Kakura listings 
                         not being contained in same element
                     """
-                    nestedListing = any(keyword.startswith(x) for x in ['MV', 'Kak']) or \
+                    # match = capture_groups_by_brand[brand].match(elem.text)
+                    # print(f'MATCH: {match}')
+                    # if match:
+                    nestedListing = any(x in elem.text for x in ['MV', 'Kak']) or \
                                     any(x in elem.text for x in ["Yellowstone", "Nozac"])
                     if nestedListing:
                         parent = elem.find_element_by_xpath("..")
@@ -178,7 +179,7 @@ for brand in product_pages.keys():
                     else:
                         elemText = elem.text
                     found.append(elemText)
-                    print(elemText)
+                    # print(elemText)
 
         found = list(
             map(
@@ -195,6 +196,14 @@ for brand in product_pages.keys():
         for p in found:
             p['srcUrl'] = page
             p['brand'] = brand
+
+            # Remove the brand name from the name of the pen
+            containsBrandName = pd.Series(data=p['name']).str.contains(brand, case=False)[0]
+            if containsBrandName:
+                updatedName = re.sub(' +', ' ', re.sub(brand, '', p['name'], flags=re.I))
+                p['name'] = updatedName
+
+            # Add to penObjs list
             penObjs.append(
                 Pen(
                     brand=brand.capitalize(),
@@ -214,37 +223,14 @@ pprint.pprint(allProductListings)
 penNames = list(map(lambda x: x['name'], allProductListings))
 pprint.pprint(penNames)
 
-# print('\nPEN OBJS:')
-# for p in penObjs:
-#     print(p)
-
 print(f'Number of pens found: {len(penObjs)}')
 
-#  TODO: BENCHMARK - just get all paragraphs, filter in based on paragraphs that start w keywords (e.g CK for Conklin or MV for Monteverde)
-
-"""
-Capture Groups: 
-    - keyword: pen name, up to 1st "&nbsp;"
-    - /^\$[0-9]\.[0-9]$/: price
-    - /sold out/: inStock
-"""
-
-defaultPen = {
-    'code': 'Unknown',
-    'brand': 'Unknown',
-    'series': 'Unknown',
-    'name': 'Unknown',
-    'color': 'color',
-    'price': 'Unknown',
-    'img': 'Unknown',
-    'srcUrl': 'Unknown'
-}
+#  TODO: BENCHMARK - just get all paragraphs, filter in based on paragraphs that include keywords (e.g CK for Conklin or MV for Monteverde)
 
 time.sleep(2)
 driver.close()
 
 # Now, we want to insert all of those pens into our Actual database
-
 client = MongoClient()  # connects on default host
 # client = MongoClient('localhost',27017))  # explicit connect command
 
